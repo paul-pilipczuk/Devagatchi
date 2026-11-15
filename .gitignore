@@ -1,1 +1,27 @@
+# Rust build output (Cargo.lock is intentionally tracked for this application)
 /target/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+/secrets/
+/.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local pet state, if stored inside the checkout
+/devagatchi/
+/pet.txt
+/pet.tmp
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

@@ -1,8 +1,12 @@
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod art;
+mod help;
 
 #[derive(Debug)]
 struct Pet {
@@ -14,6 +18,8 @@ struct Pet {
     commits: u64,
     lines: u64,
     last_fed: u64,
+    commit_meals: u64,
+    color: String,
 }
 
 fn now() -> u64 {
@@ -37,7 +43,7 @@ fn encode(s: &str) -> String {
     s.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 fn decode(s: &str) -> Result<String, String> {
-    if s.len() % 2 != 0 || !s.is_ascii() {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
         return Err("Invalid state encoding".into());
     }
     let bytes = (0..s.len())
@@ -53,7 +59,7 @@ impl Pet {
         let data = fs::read_to_string(path)
             .map_err(|e| format!("Could not read pet state: {e}. Run `devagatchi init` first."))?;
         let parts: Vec<_> = data.lines().collect();
-        if !(parts.len() == 8 || parts.len() == 9) || parts[0] != "devagatchi-v1" {
+        if !matches!(parts.len(), 8 | 9 | 11) || parts[0] != "devagatchi-v1" {
             return Err("Unrecognized or damaged pet state".into());
         }
         let number = |s: &str| {
@@ -69,9 +75,12 @@ impl Pet {
             commits: number(parts[5])?,
             lines: number(parts[6])?,
             last_fed: number(parts[7])?,
+            commit_meals: parts.get(9).map(|s| number(s)).transpose()?.unwrap_or(0),
+            color: parts.get(10).unwrap_or(&"cyan").to_string(),
         };
         if !matches!(pet.mode.as_str(), "cozy" | "traditional")
             || !valid_species(&pet.species)
+            || color_code(&pet.color).is_none()
             || (!pet.head.is_empty() && !pet.head.bytes().all(|b| b.is_ascii_hexdigit()))
         {
             return Err("Invalid pet state".into());
@@ -82,7 +91,7 @@ impl Pet {
         let dir = path.parent().ok_or("Invalid state path")?;
         fs::create_dir_all(dir).map_err(|e| format!("Could not create data directory: {e}"))?;
         let data = format!(
-            "devagatchi-v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+            "devagatchi-v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
             encode(&self.name),
             self.mode,
             encode(&self.repo),
@@ -90,7 +99,9 @@ impl Pet {
             self.commits,
             self.lines,
             self.last_fed,
-            self.species
+            self.species,
+            self.commit_meals,
+            self.color
         );
         let tmp = path.with_extension("tmp");
         fs::write(&tmp, data).map_err(|e| format!("Could not write pet state: {e}"))?;
@@ -118,41 +129,41 @@ fn valid_species(species: &str) -> bool {
     matches!(species, "cat" | "dog" | "bird" | "lizard")
 }
 
+fn color_code(color: &str) -> Option<&'static str> {
+    match color {
+        "cyan" => Some("36"),
+        "green" => Some("32"),
+        "yellow" => Some("33"),
+        "blue" => Some("34"),
+        "magenta" => Some("35"),
+        "red" => Some("31"),
+        "white" => Some("37"),
+        "off" => Some(""),
+        _ => None,
+    }
+}
+
+fn paint(text: &str, color: &str) -> String {
+    let enabled = std::io::stdout().is_terminal()
+        && env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+        && env::var("TERM").unwrap_or_default() != "dumb";
+    match color_code(color) {
+        Some(code) if enabled && !code.is_empty() => format!("\x1b[{code}m{text}\x1b[0m"),
+        _ => text.to_string(),
+    }
+}
+
 fn show_status(pet: &Pet) {
-    let art = match pet.species.as_str() {
-        "dog" => {
-            r" / \__
-(    @\___
- /         O
-/   (_____/
-/_____/   U"
-        }
-        "bird" => {
-            r"  \\  //
- ( o  o )
-  \\__//
-   /  \"
-        }
-        "lizard" => {
-            r"     __
-  .-'  '-._
- /  o    o  \__
-(      ^       _>
- \_  ----  _.-'"
-        }
-        _ => {
-            r"  /\_/\
- ( o.o )
-  > ^ <"
-        }
-    };
+    let art = paint(art::portrait(&pet.species), &pet.color);
+    let mood = paint(pet.mood(now()), &pet.color);
     println!(
-        "{art}\n\n{} the {} is {} ({})\nCommits spotted: {}\nLines fed: {}\nRepository: {}",
+        "{art}\n\n{} the {} is {} ({})\nCommits spotted: {}\nCommit meals (lifetime): {}\nLines fed (lifetime): {}\nRepository: {}",
         pet.name,
         pet.species,
-        pet.mood(now()),
+        mood,
         pet.mode,
         pet.commits,
+        pet.commit_meals,
         pet.lines,
         pet.repo
     );
@@ -190,20 +201,35 @@ fn head(repo: &str) -> Result<String, String> {
         }
     }
 }
-fn usage() {
-    println!("Devagatchi — a tiny offline developer pet\n\n  devagatchi init <name> <repo> [cozy|traditional]\n  devagatchi status\n  devagatchi sync\n  devagatchi feed <lines>\n  devagatchi mode <cozy|traditional>\n  devagatchi pet <cat|dog|bird|lizard>\n\nNo source code is read to track commits. Line counts are entered manually.");
-}
 fn run() -> Result<(), String> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() || matches!(args[0].as_str(), "help" | "--help" | "-h") {
-        usage();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    if args.len() == 1 && matches!(args[0].as_str(), "--version" | "-V") {
+        println!("devagatchi {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+        return help::show(None);
+    }
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return help::show(Some(&args[0]));
+    }
+    if args.first().map(String::as_str) == Some("help") {
+        if args.len() > 2 {
+            return Err("Usage: devagatchi help [command]".into());
+        }
+        return help::show(args.get(1).map(String::as_str));
+    }
     let path = data_file()?;
+    if args.is_empty() {
+        if !path.exists() {
+            return help::show(None);
+        }
+        args.push("status".into());
+    }
     match args[0].as_str() {
         "init" => {
-            if !(args.len() == 3 || args.len() == 4) {
-                return Err("Usage: devagatchi init <name> <repo> [cozy|traditional]".into());
+            if !(2..=4).contains(&args.len()) {
+                return Err("Usage: devagatchi init <name> [repo] [cozy|traditional]".into());
             }
             if path.exists() {
                 return Err("A pet already exists. Your existing pet was kept.".into());
@@ -212,11 +238,11 @@ fn run() -> Result<(), String> {
             if !matches!(mode, "cozy" | "traditional") {
                 return Err("Mode must be cozy or traditional".into());
             }
-            if args[1].trim().is_empty() {
-                return Err("Pet name cannot be empty".into());
+            if args[1].trim().is_empty() || args[1].chars().any(char::is_control) {
+                return Err("Pet name must be nonempty and contain no control characters".into());
             }
-            let repo =
-                fs::canonicalize(&args[2]).map_err(|e| format!("Cannot access repository: {e}"))?;
+            let repo = fs::canonicalize(args.get(2).map(String::as_str).unwrap_or("."))
+                .map_err(|e| format!("Cannot access repository: {e}"))?;
             let repo = repo
                 .to_str()
                 .ok_or("Repository path must be valid UTF-8")?
@@ -230,12 +256,15 @@ fn run() -> Result<(), String> {
                 commits: 0,
                 lines: 0,
                 last_fed: now(),
+                commit_meals: 0,
+                color: "cyan".into(),
             };
             pet.save(&path)?;
             println!(
                 "Welcome, {}! Your pet is in {} mode. Existing commits are the starting point.",
                 pet.name, pet.mode
             );
+            show_status(&pet);
         }
         "status" if args.len() == 1 => {
             let pet = Pet::load(&path)?;
@@ -267,6 +296,15 @@ fn run() -> Result<(), String> {
             pet.save(&path)?;
             show_status(&pet);
         }
+        "color" if args.len() == 2 => {
+            if color_code(&args[1]).is_none() {
+                return Err("Choose cyan, green, yellow, blue, magenta, red, white, or off".into());
+            }
+            let mut pet = Pet::load(&path)?;
+            pet.color = args[1].clone();
+            pet.save(&path)?;
+            show_status(&pet);
+        }
         "mode" if args.len() == 2 => {
             if !matches!(args[1].as_str(), "cozy" | "traditional") {
                 return Err("Mode must be cozy or traditional".into());
@@ -275,12 +313,17 @@ fn run() -> Result<(), String> {
             pet.mode = args[1].clone();
             pet.save(&path)?;
             println!("{} is now in {} mode.", pet.name, pet.mode);
+            show_status(&pet);
         }
         "sync" if args.len() == 1 => {
             let mut pet = Pet::load(&path)?;
             let new_head = head(&pet.repo)?;
             if new_head == pet.head {
-                println!("No new commits for {}.", pet.name);
+                println!(
+                    "No new commits for {}. No meal served; care timer unchanged.",
+                    pet.name
+                );
+                show_status(&pet);
                 return Ok(());
             }
             if new_head.is_empty() {
@@ -304,9 +347,17 @@ fn run() -> Result<(), String> {
                 .commits
                 .checked_add(count)
                 .ok_or("Commit total is too large")?;
+            pet.commit_meals = pet
+                .commit_meals
+                .checked_add(count)
+                .ok_or("Meal total is too large")?;
+            if count > 0 {
+                pet.last_fed = now();
+            }
             pet.head = new_head;
             pet.save(&path)?;
-            println!("{} spotted {count} new commit(s)! Feed lines manually with `devagatchi feed <lines>`.", pet.name);
+            println!("{} spotted {count} new commit(s) and ate {count} commit meal(s)!\nCare refreshed. Manual line total unchanged.\n", pet.name);
+            show_status(&pet);
         }
         _ => return Err("Unknown command or arguments. Run `devagatchi --help`.".into()),
     }
@@ -342,6 +393,8 @@ mod tests {
             commits: 0,
             lines: 0,
             last_fed: 100,
+            commit_meals: 0,
+            color: "cyan".into(),
         };
         assert_eq!(pet.mood(100 + 72 * 3600), "sleepy");
         pet.mode = "traditional".into();
