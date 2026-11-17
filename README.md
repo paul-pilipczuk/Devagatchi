@@ -5,7 +5,7 @@ An offline terminal pet for developers. Feed your pet with commits or manually e
 ## What you need
 
 - A terminal on macOS or Linux.
-- Git and Rust's Cargo installed. Run `git --version` and `cargo --version` to check. If Cargo is missing, follow the [official Rust installation instructions](https://www.rust-lang.org/tools/install); installing Rust requires an internet connection. Once built, Devagatchi runs offline.
+- Git and Rust 1.87 or newer (including Cargo) installed. Run `git --version` and `cargo --version` to check. If Cargo is missing, follow the [official Rust installation instructions](https://www.rust-lang.org/tools/install); installing Rust requires an internet connection. Once built, Devagatchi runs offline.
 - A local Git repository you want your pet to watch.
 
 ## Get started
@@ -31,7 +31,7 @@ An offline terminal pet for developers. Feed your pet with commits or manually e
    devagatchi init Mochi "/path/to/your/repository" cozy
    ```
 
-   Choose `cozy` or `traditional`. Your pet starts as a cat; you can change it below. Existing commits establish the starting point and are not counted as new activity.
+   Choose `cozy` for relaxed care (sleepy after 3 days; never hungry) or `traditional` for regular feeding (hungry after 1 day, very hungry after 2). Both start happy for 1 hour, then content. Your pet starts as a cat; you can change it below. Existing commits establish the starting point and are not counted as new activity.
 
 4. Check in and choose a pet:
 
@@ -60,7 +60,7 @@ To update an existing installation, run `git pull` followed by `cargo install --
 
 | Command | What it does |
 | --- | --- |
-| `devagatchi` or `devagatchi status` | Show your pet, mood, and lifetime totals |
+| `devagatchi` or `devagatchi status` | Show the matching face, mood, care age, next transition, and totals |
 | `devagatchi init Mochi . cozy` | Adopt a pet and track the current repository |
 | `devagatchi sync` | Feed one meal per new commit and show status |
 | `devagatchi feed 42` | Feed 42 manually entered lines and show updated status |
@@ -82,9 +82,33 @@ The app does not run in the background or install Git hooks: committing alone do
 
 Use `devagatchi color magenta` to save your preferred color. Options: `cyan` (default), `green`, `yellow`, `blue`, `magenta`, `red`, `white`, and `off`. Colors apply to the portrait and mood. Redirected output, `TERM=dumb`, or a nonempty `NO_COLOR` environment variable disables ANSI colors. Example: `NO_COLOR=1 devagatchi status`.
 
-## Care and commands
+## Care schedule and status
 
-Cozy pets become sleepy after three days without food. Traditional pets become hungry after one day and very hungry after two. Neither mode currently causes permanent harm. Switch anytime with `devagatchi mode cozy` or `devagatchi mode traditional`. Run `devagatchi --help` for the command list.
+All times are measured from adoption or the most recent meal. The face always matches the current mood.
+
+| Time since care reset | Cozy | Traditional |
+| --- | --- | --- |
+| First hour (less than 1h) | Happy | Happy |
+| 1h to less than 24h | Content | Content |
+| 24h to less than 48h | Content | Hungry |
+| 48h to less than 72h | Content | Very hungry |
+| 72h and later | Sleepy | Very hungry |
+
+A transition happens at the listed threshold: at exactly 24 hours, a traditional pet is hungry. Cozy pets never become hungry. Neither mode causes death, lost progress, or permanent harm.
+
+`devagatchi status` (or just `devagatchi`) shows:
+
+- **Mood and care mode:** the expression currently displayed and the selected schedule.
+- **Care age:** time since adoption or the last meal, whichever was most recent.
+- **Next:** the next mood and approximate time remaining, or whether the current mood lasts until feeding.
+- **Schedule:** the thresholds for the active mode.
+- **Lifetime totals:** commits spotted, commit meals, and manually fed lines, counted separately.
+
+Feeding any positive manual line count or syncing one or more new commits resets the timer to happy for an hour. Bigger meals add to lifetime totals but do not extend the care window. A sync without new commits, status checks, color changes, and appearance changes do not reset care.
+
+Time passes while the app is closed; the expression is recalculated when you run a command. There is no continuously refreshing display or background watcher. Switch schedules with `devagatchi mode cozy` or `devagatchi mode traditional`: the existing timer is preserved, so an older pet can immediately become hungry when switched to traditional mode. Run `devagatchi status --help` for these rules in the terminal.
+
+Existing pets retain their progress and care timestamp when updated. A pet fed within the past hour now displays the happy face in either mode.
 
 `sync` runs only when you ask it to. It counts new commits reachable from the tracked HEAD, including merged commits. If history is rewritten or you switch to unrelated history, sync stops instead of guessing or double-counting. For an empty repository, commits are counted once they become reachable from HEAD.
 

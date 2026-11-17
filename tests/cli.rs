@@ -156,3 +156,63 @@ fn sync_feeds_once_and_existing_pets_survive_changes() {
     assert!(out.contains("ate 8 lines"));
     assert!(out.contains("Lines fed (lifetime): 50"));
 }
+
+#[test]
+fn status_explains_care_and_mode_changes_preserve_timer() {
+    let s = Sandbox::new();
+    s.git(&["init", "-q"]);
+    let out = s.ok(&["init", "Mochi"]);
+    assert!(out.contains("Mood: happy | Care mode: cozy"));
+    assert!(out.contains("Next: content in"));
+    let path = s.0.join("data/devagatchi/pet.txt");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (age, cozy, traditional, eye) in [
+        (2, "content", "content", "o"),
+        (25, "content", "hungry", "O"),
+        (49, "content", "very hungry", ";"),
+        (73, "sleepy", "very hungry", ";"),
+    ] {
+        let mut state: Vec<String> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        state[2] = "cozy".into();
+        state[7] = (now - age * 3600).to_string();
+        let timestamp = state[7].clone();
+        fs::write(&path, state.join("\n") + "\n").unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(s
+            .ok(&["status"])
+            .contains(&format!("Mood: {cozy} | Care mode: cozy")));
+        assert_eq!(before, fs::read(&path).unwrap());
+        let out = s.ok(&["mode", "traditional"]);
+        assert!(out.contains(&format!("Mood: {traditional} | Care mode: traditional")));
+        assert!(out.contains(&format!("({eye})")));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().lines().nth(7),
+            Some(timestamp.as_str())
+        );
+        assert!(out.contains("Care age:"));
+        assert!(out.contains("Next:"));
+    }
+    let out = s.ok(&["feed", "1"]);
+    assert!(out.contains("Mood: happy"));
+    assert!(out.contains("(^)"));
+    assert!(out.contains("Next: content in"));
+    for args in [
+        vec!["--help"],
+        vec!["status", "--help"],
+        vec!["init", "--help"],
+        vec!["mode", "--help"],
+    ] {
+        let out = s.ok(&args);
+        assert!(out.contains("happy for the first hour"));
+        assert!(out.contains("72 hours"));
+        assert!(out.contains("24 hours"));
+        assert!(out.contains("48 hours"));
+    }
+}

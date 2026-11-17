@@ -6,6 +6,7 @@ use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod art;
+mod care;
 mod help;
 
 #[derive(Debug)]
@@ -107,21 +108,8 @@ impl Pet {
         fs::write(&tmp, data).map_err(|e| format!("Could not write pet state: {e}"))?;
         fs::rename(tmp, path).map_err(|e| format!("Could not save pet state: {e}"))
     }
-    fn mood(&self, time: u64) -> &'static str {
-        let hours = time.saturating_sub(self.last_fed) / 3600;
-        if self.mode == "cozy" {
-            if hours >= 72 {
-                "sleepy"
-            } else {
-                "content"
-            }
-        } else if hours >= 48 {
-            "very hungry"
-        } else if hours >= 24 {
-            "hungry"
-        } else {
-            "happy"
-        }
+    fn mood(&self, time: u64) -> care::Mood {
+        care::schedule(&self.mode, time.saturating_sub(self.last_fed)).0
     }
 }
 
@@ -154,19 +142,39 @@ fn paint(text: &str, color: &str) -> String {
 }
 
 fn show_status(pet: &Pet) {
-    let art = paint(art::portrait(&pet.species), &pet.color);
-    let mood = paint(pet.mood(now()), &pet.color);
+    let time = now();
+    let elapsed = time.saturating_sub(pet.last_fed);
+    let mood = pet.mood(time);
+    let (_, next) = care::schedule(&pet.mode, elapsed);
+    let art = paint(&art::portrait(&pet.species, mood), &pet.color);
+    println!("{art}\n\n{} the {}", pet.name, pet.species);
     println!(
-        "{art}\n\n{} the {} is {} ({})\nCommits spotted: {}\nCommit meals (lifetime): {}\nLines fed (lifetime): {}\nRepository: {}",
-        pet.name,
-        pet.species,
-        mood,
-        pet.mode,
-        pet.commits,
-        pet.commit_meals,
-        pet.lines,
-        pet.repo
+        "Mood: {} | Care mode: {}",
+        paint(mood.label(), &pet.color),
+        pet.mode
     );
+    println!(
+        "Care age: {} since adoption or the last meal",
+        care::duration(elapsed)
+    );
+    match next {
+        Some((next_mood, remaining)) => println!(
+            "Next: {} in {}",
+            next_mood.label(),
+            care::duration(remaining)
+        ),
+        None if mood == care::Mood::Sleepy => {
+            println!("Next: stays sleepy until fed. Cozy mode never becomes hungry.")
+        }
+        None => println!("Next: stays very hungry until fed. No permanent harm."),
+    }
+    if pet.mode == "cozy" {
+        println!("Schedule: happy <1h -> content <72h -> sleepy at 72h");
+    } else {
+        println!("Schedule: happy <1h -> content <24h -> hungry <48h -> very hungry at 48h");
+    }
+    println!("\nCommits spotted: {}\nCommit meals (lifetime): {}\nLines fed (lifetime): {}\nRepository: {}", pet.commits, pet.commit_meals, pet.lines, pet.repo);
+    println!("\nFeed: devagatchi sync (new commits) or devagatchi feed 42 (manual lines).");
 }
 
 // Git is only asked for commit IDs and ancestry/count metadata, never diffs or file contents.
@@ -396,9 +404,10 @@ mod tests {
             commit_meals: 0,
             color: "cyan".into(),
         };
-        assert_eq!(pet.mood(100 + 72 * 3600), "sleepy");
+        assert_eq!(pet.mood(100 + 72 * 3600), care::Mood::Sleepy);
+        assert_eq!(pet.mood(0), care::Mood::Happy); // Clock moved backwards.
         pet.mode = "traditional".into();
-        assert_eq!(pet.mood(100 + 24 * 3600), "hungry");
-        assert_eq!(pet.mood(100 + 48 * 3600), "very hungry");
+        assert_eq!(pet.mood(100 + 24 * 3600), care::Mood::Hungry);
+        assert_eq!(pet.mood(100 + 48 * 3600), care::Mood::VeryHungry);
     }
 }
