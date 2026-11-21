@@ -194,7 +194,7 @@ pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64, u64, 
         .ok_or("Missing timestamp")?
         .parse::<u64>()
         .map_err(|_| "Invalid commit timestamp")?;
-    // Merges have no additional meal; ordinary ancestor commits are handled separately.
+    // Merge changes do not add lines or files; ancestor commits are handled separately.
     if fields.len() > 2 {
         return Ok((0, 0, 0, timestamp));
     }
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(parse_stats(b"1\t0\t\0old\0new\0", &[]).unwrap(), (1, 0));
         assert_eq!(parse_stats(b"100\t0\tCargo.lock\0", &[]).unwrap(), (0, 0));
         assert_eq!(
-            count_new_files(b"0\t0\tempty\0-\t-\tbinary\010\t0\tCargo.lock\0", &[]).unwrap(),
+            count_new_files(b"0\t0\tempty\0-\t-\tbinary\x0010\t0\tCargo.lock\0", &[]).unwrap(),
             1
         );
     }

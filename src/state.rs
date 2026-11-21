@@ -21,7 +21,7 @@ pub struct Event {
     pub added: u64,
     pub deleted: u64,
     pub files: u64,
-    // n: new-rule commit; c: legacy commit; m: commit; m: manual; cozy/traditional: mode change
+    // b/u: balanced commit/manual; c/m: legacy commit/manual; n: prior bonus commit.
     pub kind: String,
 }
 #[derive(Clone, Debug)]
