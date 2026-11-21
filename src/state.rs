@@ -336,6 +336,25 @@ impl Pet {
         for x in &self.excludes {
             data += &format!("X\t{}\n", encode(x));
         }
+        // Keep the original v1 save before the first v2 write. Never overwrite a backup.
+        if fs::read_to_string(path).is_ok_and(|s| s.starts_with("devagatchi-v1\n")) {
+            let backup = PathBuf::from(format!("{}.v1.bak", path.display()));
+            reject_symlink(&backup)?;
+            if !backup.exists() {
+                let original = fs::read(path).map_err(|e| e.to_string())?;
+                let mut options = OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut file = options.open(backup).map_err(|e| e.to_string())?;
+                file.write_all(&original)
+                    .and_then(|_| file.sync_all())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         let temp = PathBuf::from(format!("{}.tmp", path.display()));
         reject_symlink(&temp)?;
         let mut options = OpenOptions::new();
@@ -350,5 +369,58 @@ impl Pet {
             .and_then(|_| file.sync_all())
             .map_err(|e| e.to_string())?;
         fs::rename(temp, path).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn pet() -> Pet {
+        Pet {
+            name: "Test".into(),
+            species: "cat".into(),
+            color: "off".into(),
+            start: 0,
+            initial_food: 0.,
+            initial_mode: "cozy".into(),
+            old_commits: 0,
+            old_meals: 0,
+            old_lines: 0,
+            repos: vec![],
+            events: vec![],
+            seen: BTreeSet::new(),
+            excludes: vec![],
+        }
+    }
+    fn event(key: &str, at: u64, lines: u64, kind: &str) -> Event {
+        Event {
+            key: key.into(),
+            at,
+            added: lines,
+            deleted: 0,
+            kind: kind.into(),
+        }
+    }
+    #[test]
+    fn missed_work_decays_and_modes_apply_at_event_time() {
+        let mut p = pet();
+        p.events.push(event("meal", 0, 25, "c"));
+        assert_eq!(p.view(0).food, 20.);
+        assert_eq!(p.view(72 * 3600).food, 0.);
+        p.events.push(event("mode", 3600, 0, "traditional"));
+        assert!((p.view(7200).food - (20. - 100. / 72. - 100. / 24.)).abs() < 0.00001);
+    }
+    #[test]
+    fn replay_is_order_independent_and_daily_budget_shared() {
+        let mut p = pet();
+        p.events = vec![event("b", 120, 75, "c"), event("a", 60, 25, "m")];
+        let view = p.view(120);
+        assert_eq!(view.earned, 40);
+        p.events.reverse();
+        assert_eq!(view.food, p.view(120).food);
+        p.events.push(event("c", 180, 10000, "c"));
+        assert_eq!(p.view(180).earned, 100);
+        p.events.push(event("d", 86400, 25, "c"));
+        assert_eq!(p.view(86400).earned, 120);
     }
 }

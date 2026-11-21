@@ -143,6 +143,7 @@ fn legacy_migration_preserves_identity_and_totals() {
         .unwrap()
         .starts_with("devagatchi-v2"));
     assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
+    assert!(s.global().with_extension("txt.v1.bak").exists());
 }
 #[test]
 fn manual_and_git_lines_share_budget_and_invalid_inputs_do_not_write() {
@@ -210,4 +211,157 @@ fn help_before_setup_and_all_settings() {
     for pet in ["cat", "dog", "bird", "lizard"] {
         assert!(s.ok(&["pet", pet]).contains(&format!("M the {pet}")));
     }
+}
+
+#[test]
+fn hooks_feed_both_preserve_amends_and_uninstall_cleanly() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    s.ok(&["init", "R", "--repo"]);
+    s.ok(&["hooks", "install", "--push"]);
+    assert!(s
+        .ok(&["hooks", "status"])
+        .contains("post-commit: installed"));
+    s.commit("food.txt", &"x\n".repeat(25));
+    assert!(s.ok(&["status", "--global"]).contains("Food earned: 20"));
+    assert!(s.ok(&["status", "--repo"]).contains("Food earned: 20"));
+    s.git(&["commit", "--amend", "--no-edit"]);
+    assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
+    assert!(s.ok(&["status", "--global"]).contains("Commits spotted: 1"));
+    let before = fs::read(s.global()).unwrap();
+    s.ok(&["hook", "push"]);
+    assert_eq!(before, fs::read(s.global()).unwrap());
+    s.ok(&["hooks", "uninstall"]);
+    assert!(s
+        .ok(&["hooks", "status"])
+        .contains("post-commit: not installed"));
+}
+#[test]
+fn existing_hooks_and_shared_managers_are_untouched() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    let path = s.0.join("repo/.git/hooks/post-commit");
+    fs::write(&path, "#!/bin/sh\necho existing\n").unwrap();
+    assert!(!s.cli(&["hooks", "install"]).status.success());
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "#!/bin/sh\necho existing\n"
+    );
+    s.ok(&["hooks", "uninstall"]);
+    assert!(path.exists());
+    s.git(&["config", "core.hooksPath", "custom-hooks"]);
+    assert!(!s.cli(&["hooks", "install"]).status.success());
+    assert!(!s.0.join("repo/custom-hooks").exists());
+}
+#[test]
+fn catch_up_is_bounded_and_does_not_skip_branches() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    // Empty commits still exercise the full traversal and duplicate ledger.
+    for _ in 0..201 {
+        s.git(&["commit", "--allow-empty", "-qm", "work"]);
+    }
+    assert!(!s.cli(&["sync"]).status.success());
+    assert!(s
+        .ok(&["sync", "--catch-up"])
+        .contains("More history remains"));
+    assert!(s.ok(&["sync", "--catch-up"]).contains("1 new commit(s)"));
+    assert!(s.ok(&["status"]).contains("Commits spotted: 201"));
+    assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
+}
+#[test]
+fn worktrees_share_global_duplicate_protection_but_keep_local_pets() {
+    let s = Sandbox::new();
+    s.setup();
+    s.commit("baseline", "b\n");
+    s.ok(&["init", "G"]);
+    let other = s.0.join("worktree");
+    s.git(&["worktree", "add", "-b", "other", other.to_str().unwrap()]);
+    assert!(s
+        .command(&["connect"])
+        .current_dir(&other)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(s
+        .command(&["init", "R", "--repo"])
+        .current_dir(&other)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    s.commit("food", "x\n");
+    s.ok(&["sync"]);
+    let head = s.git(&["rev-parse", "HEAD"]);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&other)
+        .args(["merge", "--ff-only", head.trim()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = s.command(&["sync"]).current_dir(&other).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(s.ok(&["status", "--global"]).contains("Commits spotted: 1"));
+}
+#[test]
+fn concurrent_feeding_preserves_state_and_locks_release_after_exit() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    let mut children = vec![];
+    for _ in 0..8 {
+        children.push(
+            s.command(&["feed", "1"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    let successes = children
+        .iter_mut()
+        .map(|c| c.wait().unwrap().success())
+        .filter(|success| *success)
+        .count();
+    assert!(s
+        .ok(&["status"])
+        .contains(&format!("Lines fed (lifetime): {successes}")));
+    s.ok(&["feed", "1"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_timeout_terminates_worker_and_git_subprocesses() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    let bin = s.0.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let shim = bin.join("git");
+    fs::write(&shim, "#!/bin/sh\nsleep 10\n").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let start = std::time::Instant::now();
+    let out = s
+        .command(&["hook", "commit"])
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("hook time budget"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    // Lock acquisition still works after timeout.
+    s.ok(&["feed", "1"]);
 }

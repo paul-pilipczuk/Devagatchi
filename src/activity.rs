@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub const BATCH: usize = 200;
 #[derive(Default)]
 pub struct Cache {
-    stats: HashMap<String, (u64, u64)>,
+    stats: HashMap<String, (u64, u64, u64)>,
 }
 #[derive(Default)]
 pub struct Report {
@@ -65,16 +65,13 @@ fn ingest(
             continue;
         }
         let cache_key = format!("{}:{:?}", key, pet.excludes);
-        let (added, deleted) = if let Some(s) = cache.stats.get(&cache_key) {
+        let (added, deleted, timestamp) = if let Some(s) = cache.stats.get(&cache_key) {
             *s
         } else {
             let s = git::stats(&repo.root, id, &pet.excludes)?;
             cache.stats.insert(cache_key, s);
             s
         };
-        let timestamp = git::run(&repo.root, &["show", "-s", "--format=%ct", id])?
-            .parse::<u64>()
-            .map_err(|_| "Invalid commit timestamp")?;
         // Historical meals decay from the commit time. Clamp untrusted clocks to enrollment/now.
         let at = timestamp.max(repo.since).min(now());
         pet.events.push(Event {

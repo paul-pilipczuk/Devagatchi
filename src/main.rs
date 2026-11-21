@@ -9,6 +9,7 @@ mod art;
 mod care;
 mod git;
 mod help;
+mod hooks;
 mod state;
 use state::{Event, Guard, Pet};
 pub fn now() -> u64 {
@@ -83,7 +84,10 @@ fn status(label: &str, pet: &Pet) {
     let v = pet.view(now());
     let mood = care::mood(v.food, &v.mode);
     let filled = (v.food / 5.).floor() as usize;
-    println!("{}", paint(&art::portrait(&pet.species, mood), &pet.color));
+    let compact = env::var_os("DEVAGATCHI_HOOK").is_some() && !std::io::stdout().is_terminal();
+    if !compact {
+        println!("{}", paint(&art::portrait(&pet.species, mood), &pet.color));
+    }
     println!(
         "{}",
         paint(
@@ -103,6 +107,9 @@ fn status(label: &str, pet: &Pet) {
         mood.label(),
         v.mode
     );
+    if compact {
+        return;
+    }
     let seconds = (v.food * care::period(&v.mode) as f64 / 100.).ceil() as u64;
     println!(
         "Empty in: {}{}",
@@ -182,8 +189,12 @@ fn sync_selected(scope: Scope, catch_up: bool) -> Result<(), String> {
             let _guard = Guard::acquire(&path)?;
             let mut pet = Pet::load(&path)?;
             if only.is_some_and(|r| !pet.repos.iter().any(|b| b.root == r)) {
+                println!(
+                    "{label}: this checkout is not connected; run devagatchi connect to opt in."
+                );
                 return Ok(());
             }
+            let before_heads: Vec<_> = pet.repos.iter().map(|r| r.head.clone()).collect();
             let before = pet.view(now()).earned;
             let report = if catch_up {
                 activity::catch_up(&mut pet, only, &mut cache)?
@@ -191,7 +202,9 @@ fn sync_selected(scope: Scope, catch_up: bool) -> Result<(), String> {
                 activity::sync(&mut pet, only, &mut cache)?
             };
             let earned = pet.view(now()).earned.saturating_sub(before);
-            pet.save(&path)?;
+            if report.commits > 0 || pet.repos.iter().map(|r| &r.head).ne(before_heads.iter()) {
+                pet.save(&path)?;
+            }
             println!("{label}: {} new commit(s), +{} / -{} lines, +{earned} food earned. Excess food is not banked.",report.commits,report.added,report.deleted);
             if report.pending {
                 println!("More history remains; run sync --catch-up again.");
@@ -237,6 +250,56 @@ fn run() -> Result<(), String> {
     match args[0].as_str() {
         "init" => initialize(&args, scope),
         "connect" if args.len() == 1 && matches!(scope, Scope::Auto | Scope::Global) => connect(),
+        "hooks" if (2..=3).contains(&args.len()) && scope == Scope::Auto => {
+            match args[1].as_str() {
+                "install" if args.len() == 2 || args[2] == "--push" => {
+                    paths(Scope::Auto, false)?;
+                    hooks::install(args.len() == 3)?;
+                    if state::global_path()?.exists() {
+                        connect()?;
+                    }
+                    Ok(())
+                }
+                "status" if args.len() == 2 => hooks::status(),
+                "uninstall" if args.len() == 2 => hooks::uninstall(),
+                _ => Err("Usage: hooks install [--push] | status | uninstall".into()),
+            }
+        }
+        "hook" if args.len() >= 2 && scope == Scope::Auto => hooks::invoke(&args[1..]),
+        "__hook-worker" if args.len() >= 2 && scope == Scope::Auto => match args[1].as_str() {
+            "commit" => sync_selected(Scope::Auto, false),
+            "push" => {
+                for (label, path) in paths(Scope::Auto, false)? {
+                    let _guard = Guard::acquire(&path)?;
+                    status(&label, &Pet::load(&path)?);
+                }
+                Ok(())
+            }
+            "rewrite" => {
+                let root = git::root(".")?;
+                let mappings = hooks::mappings()?;
+                let mut errors = vec![];
+                for (label, path) in paths(Scope::Auto, false)? {
+                    let result = (|| -> Result<(), String> {
+                        let _guard = Guard::acquire(&path)?;
+                        let mut pet = Pet::load(&path)?;
+                        activity::rewrite(&mut pet, &root, &mappings)?;
+                        pet.save(&path)?;
+                        Ok(())
+                    })();
+                    if let Err(e) = result {
+                        errors.push(format!("{label}: {e}"));
+                    }
+                }
+                if errors.is_empty() {
+                    println!("Devagatchi: rewritten commits reconciled without extra meals.");
+                    Ok(())
+                } else {
+                    Err(errors.join("\n"))
+                }
+            }
+            _ => Err("Unknown hook event".into()),
+        },
         "sync" if args.len() == 1 || (args.len() == 2 && args[1] == "--catch-up") => {
             sync_selected(scope, args.len() == 2)
         }

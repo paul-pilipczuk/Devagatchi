@@ -182,17 +182,21 @@ pub fn excluded(path: &str, custom: &[String]) -> bool {
             .iter()
             .any(|p| path == p || path.starts_with(&format!("{}/", p.trim_end_matches('/'))))
 }
-pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64), String> {
+pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64, u64), String> {
     if !oid_or_empty(id) || id.is_empty() {
         return Err("Invalid commit ID".into());
     }
-    // Merges have no additional meal; their ordinary ancestor commits are processed separately.
-    if run(root, &["rev-list", "--parents", "-n", "1", id])?
-        .split_whitespace()
-        .count()
-        > 2
-    {
-        return Ok((0, 0));
+    // Read timestamp and parent IDs together; never request commit messages.
+    let metadata = run(root, &["show", "-s", "--format=%ct %P", id])?;
+    let fields: Vec<_> = metadata.split_whitespace().collect();
+    let timestamp = fields
+        .first()
+        .ok_or("Missing timestamp")?
+        .parse::<u64>()
+        .map_err(|_| "Invalid commit timestamp")?;
+    // Merges have no additional meal; ordinary ancestor commits are handled separately.
+    if fields.len() > 2 {
+        return Ok((0, 0, timestamp));
     }
     let raw = bytes(
         root,
@@ -211,7 +215,8 @@ pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64), Stri
             id,
         ],
     )?;
-    parse_stats(&raw, custom)
+    let (added, deleted) = parse_stats(&raw, custom)?;
+    Ok((added, deleted, timestamp))
 }
 fn parse_stats(raw: &[u8], custom: &[String]) -> Result<(u64, u64), String> {
     let mut fields = raw.split(|b| *b == 0);
