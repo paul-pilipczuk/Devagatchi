@@ -123,11 +123,11 @@ The current mood controls the animal's expression. The food bar appears directly
 | `devagatchi hooks uninstall` | Remove only unchanged hooks owned by Devagatchi |
 | `devagatchi --help` / `devagatchi help sync` | Full help / command-specific help |
 
-Use `--global`, `--repo`, or `--both` for status and settings. If both pets exist, manual feeding and settings changes require an explicit scope. `--both` requires both pets. Automatic Git feeding updates each pet independently: if one is busy, a later sync can retry it without feeding the other twice.
+Use `--global`, `--repo`, or `--both` for status and settings. If both pets exist, manual feeding and settings changes require an explicit scope. `--both` requires both pets. Automatic Git feeding updates each pet independently: if one is busy, a later sync can retry it without feeding the other twice. A global sync saves progress from healthy repositories even if another connected repository is unavailable; the command reports the failed repositories and exits with an error so you can retry them.
 
 ## Hooks, history, and resource use
 
-Hooks are opt-in per repository. Installation refuses to overwrite existing hooks or replace a configured `core.hooksPath`; use your existing hook manager's integration instead:
+Hooks are opt-in per repository. Installation refuses to overwrite existing hooks or replace a configured `core.hooksPath`; automatic uninstall also leaves custom/shared hook directories untouched; use your existing hook manager's integration instead:
 
 ```sh
 # In post-commit and post-merge:

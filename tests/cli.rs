@@ -365,3 +365,77 @@ fn hook_timeout_terminates_worker_and_git_subprocesses() {
     // Lock acquisition still works after timeout.
     s.ok(&["feed", "1"]);
 }
+
+#[test]
+fn unavailable_repo_does_not_discard_successful_global_sync() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    let other = s.0.join("other");
+    fs::create_dir(&other).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .arg(&other)
+        .status()
+        .unwrap()
+        .success());
+    assert!(s
+        .command(&["connect"])
+        .current_dir(&other)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    fs::rename(&other, s.0.join("unavailable")).unwrap();
+    s.commit("work", "hello\n");
+    let out = s.cli(&["sync", "--global"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 new commit(s)"));
+    assert!(s.ok(&["status", "--global"]).contains("Commits spotted: 1"));
+    let before = fs::read(s.global()).unwrap();
+    s.cli(&["sync", "--global"]);
+    assert_eq!(before, fs::read(s.global()).unwrap());
+}
+#[test]
+fn recorded_events_protect_against_missing_seen_rows_and_duplicates_are_rejected() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    s.commit("work", "hello\n");
+    s.ok(&["sync"]);
+    let state = fs::read_to_string(s.global()).unwrap();
+    let mut rows: Vec<String> = state
+        .lines()
+        .filter(|r| !r.starts_with("S\t"))
+        .map(str::to_string)
+        .collect();
+    let r = rows.iter_mut().find(|r| r.starts_with("R\t")).unwrap();
+    let mut fields: Vec<_> = r.split('\t').map(str::to_string).collect();
+    fields[4] = String::new();
+    *r = fields.join("\t");
+    fs::write(s.global(), rows.join("\n") + "\n").unwrap();
+    assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
+    let mut saved = fs::read_to_string(s.global()).unwrap();
+    let event = saved
+        .lines()
+        .find(|r| r.starts_with("E\t"))
+        .unwrap()
+        .to_string();
+    saved += &format!("{event}\n");
+    fs::write(s.global(), &saved).unwrap();
+    assert!(!s.cli(&["feed", "1"]).status.success());
+    assert_eq!(saved, fs::read_to_string(s.global()).unwrap());
+}
+#[test]
+fn custom_hook_directory_is_preserved_even_for_owned_scripts() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    s.ok(&["hooks", "install"]);
+    // A shared hook manager can point at scripts that look exactly like ours.
+    s.git(&["config", "core.hooksPath", ".git/hooks"]);
+    let path = s.0.join("repo/.git/hooks/post-commit");
+    let before = fs::read(&path).unwrap();
+    assert!(!s.cli(&["hooks", "uninstall"]).status.success());
+    assert_eq!(before, fs::read(path).unwrap());
+}

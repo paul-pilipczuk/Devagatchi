@@ -197,9 +197,9 @@ fn sync_selected(scope: Scope, catch_up: bool) -> Result<(), String> {
             let before_heads: Vec<_> = pet.repos.iter().map(|r| r.head.clone()).collect();
             let before = pet.view(now()).earned;
             let report = if catch_up {
-                activity::catch_up(&mut pet, only, &mut cache)?
+                activity::catch_up(&mut pet, only, &mut cache)
             } else {
-                activity::sync(&mut pet, only, &mut cache)?
+                activity::sync(&mut pet, only, &mut cache)
             };
             let earned = pet.view(now()).earned.saturating_sub(before);
             if report.commits > 0 || pet.repos.iter().map(|r| &r.head).ne(before_heads.iter()) {
@@ -210,7 +210,11 @@ fn sync_selected(scope: Scope, catch_up: bool) -> Result<(), String> {
                 println!("More history remains; run sync --catch-up again.");
             }
             status(&label, &pet);
-            Ok(())
+            if report.errors.is_empty() {
+                Ok(())
+            } else {
+                Err(report.errors.join("\n"))
+            }
         })();
         if let Err(e) = result {
             errors.push(format!("{label}: {e}"));

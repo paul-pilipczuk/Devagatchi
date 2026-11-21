@@ -1,0 +1,41 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main, 'feat/**']
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        toolchain: [stable]
+        include:
+          - os: ubuntu-latest
+            toolchain: '1.89.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install toolchain
+        run: rustup toolchain install '${{ matrix.toolchain }}' --profile minimal --component rustfmt --component clippy
+      - name: Formatting
+        if: matrix.toolchain == 'stable'
+        run: cargo +${{ matrix.toolchain }} fmt --check
+      - name: Tests
+        run: cargo +${{ matrix.toolchain }} test --offline -- --test-threads=1
+      - name: Lint
+        run: cargo +${{ matrix.toolchain }} clippy --offline --all-targets -- -D warnings
+      - name: Release build
+        run: cargo +${{ matrix.toolchain }} build --release --offline
+      - name: Secret pattern scan
+        run: python3 scripts/check_secrets.py

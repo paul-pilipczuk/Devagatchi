@@ -158,7 +158,8 @@ impl Pet {
         let mut commits = self.old_commits;
         let mut lines = self.old_lines;
         let mut events: Vec<_> = self.events.iter().collect();
-        events.sort_by(|a, b| (a.at, &a.key).cmp(&(b.at, &b.key)));
+        // Stable ordering preserves consecutive settings changes in the same second.
+        events.sort_by_key(|e| e.at);
         for e in events {
             let when = e.at.max(self.start).min(time.max(self.start));
             food = care::drain(food, &mode, when.saturating_sub(at));
@@ -256,6 +257,13 @@ impl Pet {
                 _ => return Err("Damaged state record".into()),
             }
         }
+        // Activity records also establish identity; a missing auxiliary S row cannot
+        // make an already-recorded commit eligible for another meal.
+        for event in &pet.events {
+            if event.kind == "c" {
+                pet.seen.insert(event.key.clone());
+            }
+        }
         pet.validate()?;
         Ok(pet)
     }
@@ -269,6 +277,10 @@ impl Pet {
             || !(0.0..=100.).contains(&self.initial_food)
         {
             return Err("Invalid pet settings".into());
+        }
+        let mut keys = BTreeSet::new();
+        if self.events.iter().any(|e| !keys.insert(&e.key)) {
+            return Err("Duplicated activity record".into());
         }
         Ok(())
     }
@@ -422,5 +434,42 @@ mod tests {
         assert_eq!(p.view(180).earned, 100);
         p.events.push(event("d", 86400, 25, "c"));
         assert_eq!(p.view(86400).earned, 120);
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn same_second_mode_changes_keep_insertion_order() {
+        let mut p = Pet::new(
+            "Test".into(),
+            "cozy".into(),
+            Binding {
+                root: "/tmp".into(),
+                common: "/tmp/.git".into(),
+                baseline: String::new(),
+                head: String::new(),
+                since: 0,
+            },
+        );
+        p.start = 0;
+        // Lexical sorting put :10 before :9, silently restoring the wrong mode.
+        p.events.push(Event {
+            key: "manual:100:9".into(),
+            at: 100,
+            added: 0,
+            deleted: 0,
+            kind: "traditional".into(),
+        });
+        p.events.push(Event {
+            key: "manual:100:10".into(),
+            at: 100,
+            added: 0,
+            deleted: 0,
+            kind: "cozy".into(),
+        });
+        assert_eq!(p.view(100).mode, "cozy");
+        assert_eq!(p.view(101).mode, "cozy");
     }
 }

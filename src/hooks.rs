@@ -74,6 +74,9 @@ pub fn install(push: bool) -> Result<(), String> {
 }
 pub fn uninstall() -> Result<(), String> {
     let root = git::root(".")?;
+    if git::run(&root, &["config", "--get", "core.hooksPath"]).is_ok() {
+        return Err("Custom core.hooksPath detected; shared hooks were left untouched. Remove the Devagatchi call through your hook manager.".into());
+    }
     let dir = directory(&root)?;
     ordinary(&dir)?;
     for name in NAMES {
