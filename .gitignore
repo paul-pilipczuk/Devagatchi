@@ -17,6 +17,7 @@
 /devagatchi/
 /pet.txt
 /pet.tmp
+/.devagatchi.local*
 
 # Editor and operating-system files
 .DS_Store
