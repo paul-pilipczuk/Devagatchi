@@ -84,8 +84,8 @@ fn scopes_keep_pets_independent_and_ignore_local_data() {
     assert!(s.ok(&["status"]).contains("Scout"));
     assert!(!s.cli(&["feed", "25"]).status.success());
     s.ok(&["feed", "25", "--both"]);
-    assert!(s.ok(&["status", "--global"]).contains("Food earned: 20"));
-    assert!(s.ok(&["status", "--repo"]).contains("Food earned: 20"));
+    assert!(s.ok(&["status", "--global"]).contains("Food earned: 15"));
+    assert!(s.ok(&["status", "--repo"]).contains("Food earned: 15"));
     assert!(s
         .git(&["check-ignore", ".devagatchi.local"])
         .contains(".devagatchi.local"));
@@ -102,7 +102,7 @@ fn line_stats_fan_out_and_sync_is_idempotent() {
     s.ok(&["init", "Scout", "--repo"]);
     s.commit("file.txt", &"hello\n".repeat(25));
     let out = s.ok(&["sync"]);
-    assert_eq!(out.matches("+25 / -0 lines, +20 food").count(), 2);
+    assert_eq!(out.matches("+25 / -0 lines, +23 food").count(), 2);
     let state = fs::read(s.global()).unwrap();
     assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
     assert_eq!(state, fs::read(s.global()).unwrap());
@@ -110,10 +110,10 @@ fn line_stats_fan_out_and_sync_is_idempotent() {
     let out = s.ok(&["sync"]);
     assert_eq!(out.matches("+75 / -0 lines, +20 food").count(), 2);
     s.commit("Cargo.lock", &"generated\n".repeat(100));
-    assert!(s.ok(&["sync"]).contains("+0 / -0 lines, +0 food"));
+    assert!(s.ok(&["sync"]).contains("+0 / -0 lines, +5 food"));
     s.git(&["mv", "file.txt", "renamed.txt"]);
     s.git(&["commit", "-qm", "rename"]);
-    assert!(s.ok(&["sync"]).contains("+0 / -0 lines, +0 food"));
+    assert!(s.ok(&["sync"]).contains("+0 / -0 lines, +5 food"));
     s.commit("renamed.txt", &"hello\n".repeat(90));
     assert!(s.ok(&["sync"]).contains("+0 / -10 lines"));
 }
@@ -152,7 +152,7 @@ fn manual_and_git_lines_share_budget_and_invalid_inputs_do_not_write() {
     s.ok(&["init", "M"]);
     s.ok(&["feed", "25"]);
     s.commit("x", &"x\n".repeat(75));
-    assert!(s.ok(&["sync"]).contains("+20 food"));
+    assert!(s.ok(&["sync"]).contains("+23 food"));
     let before = fs::read(s.global()).unwrap();
     for args in [
         vec!["feed", "0"],
@@ -173,7 +173,7 @@ fn global_multiple_repositories_and_custom_excludes() {
     s.ok(&["exclude", "generated"]);
     fs::create_dir_all(s.0.join("repo/generated")).unwrap();
     s.commit("generated/output", "x\n");
-    assert!(s.ok(&["sync"]).contains("+0 food"));
+    assert!(s.ok(&["sync"]).contains("+5 food"));
     let other = s.0.join("other");
     fs::create_dir(&other).unwrap();
     assert!(Command::new("git")
@@ -224,8 +224,8 @@ fn hooks_feed_both_preserve_amends_and_uninstall_cleanly() {
         .ok(&["hooks", "status"])
         .contains("post-commit: installed"));
     s.commit("food.txt", &"x\n".repeat(25));
-    assert!(s.ok(&["status", "--global"]).contains("Food earned: 20"));
-    assert!(s.ok(&["status", "--repo"]).contains("Food earned: 20"));
+    assert!(s.ok(&["status", "--global"]).contains("Food earned: 23"));
+    assert!(s.ok(&["status", "--repo"]).contains("Food earned: 23"));
     s.git(&["commit", "--amend", "--no-edit"]);
     assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
     assert!(s.ok(&["status", "--global"]).contains("Commits spotted: 1"));

@@ -378,8 +378,9 @@ fn run() -> Result<(), String> {
                             at,
                             added: count,
                             deleted: 0,
+                            files: 0,
                             kind: if command == "feed" {
-                                "m".into()
+                                "u".into()
                             } else {
                                 value.clone()
                             },

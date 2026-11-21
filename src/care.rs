@@ -21,7 +21,8 @@ pub const GUIDE: &str = "FOOD & CARE
   Food ranges from 0 to 100. A full bar lasts 72h in cozy or 24h in traditional.
   80-100: happy. 40-79: content. Below 40: sleepy (cozy) or hungry (traditional).
   At zero: cozy rests; traditional is very hungry. No death or lost progress.
-  Daily food = min(100, floor(4 * sqrt(eligible added + deleted lines))).
+  Daily food = min(60, floor(3 * sqrt(lines))) + min(25, 5 * commits)
+    + min(15, 3 * new files), up to 100 food.
   Each event earns only the increase in that day's total; days use UTC.
   Food above 100 is discarded. Manual lines share the same daily allowance.
   Time passes while closed. Mode changes apply the old rate up to the change.
@@ -30,6 +31,10 @@ pub fn earned(lines: u64) -> u64 {
     // Integer arithmetic: at 625 lines the daily reward is already saturated.
     let scaled = lines.min(625) * 16;
     (0..=100).rev().find(|n| n * n <= scaled).unwrap_or(0)
+}
+pub fn balanced_lines(lines: u64) -> u64 {
+    let scaled = lines.min(400) * 9;
+    (0..=60).rev().find(|n| n * n <= scaled).unwrap_or(0)
 }
 pub fn drain(food: f64, mode: &str, seconds: u64) -> f64 {
     (food - seconds as f64 * 100.0 / period(mode) as f64).max(0.0)

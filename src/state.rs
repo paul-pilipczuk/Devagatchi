@@ -20,7 +20,8 @@ pub struct Event {
     pub at: u64,
     pub added: u64,
     pub deleted: u64,
-    // c: commit; m: manual; cozy/traditional: mode change
+    pub files: u64,
+    // n: new-rule commit; c: legacy commit; m: commit; m: manual; cozy/traditional: mode change
     pub kind: String,
 }
 #[derive(Clone, Debug)]
@@ -153,7 +154,7 @@ impl Pet {
         let mut food = self.initial_food;
         let mut mode = self.initial_mode.clone();
         let mut at = self.start;
-        let mut days = BTreeMap::<u64, u64>::new();
+        let mut days = BTreeMap::<u64, (u64, u64, u64, u64, u64)>::new();
         let mut earned = 0u64;
         let mut commits = self.old_commits;
         let mut lines = self.old_lines;
@@ -168,15 +169,35 @@ impl Pet {
                 mode = e.kind.clone();
                 continue;
             }
-            if e.kind == "c" {
+            if matches!(e.kind.as_str(), "c" | "n" | "b") {
                 commits = commits.saturating_add(1);
             }
             let count = e.added.saturating_add(e.deleted);
             lines = lines.saturating_add(count);
             let daily = days.entry(e.at / 86400).or_default();
-            let before = care::earned(*daily);
-            *daily = daily.saturating_add(count);
-            let meal = care::earned(*daily) - before;
+            let old_lines = daily.0;
+            daily.0 = daily.0.saturating_add(count);
+            let reward = if matches!(e.kind.as_str(), "b" | "u") {
+                let line_reward = care::balanced_lines(daily.0) - care::balanced_lines(old_lines);
+                let old_commit = daily.2.min(5) * 5;
+                let old_files = daily.3.min(5) * 3;
+                if e.kind == "b" {
+                    daily.2 = daily.2.saturating_add(1);
+                    daily.3 = daily.3.saturating_add(e.files);
+                }
+                line_reward + daily.2.min(5) * 5 - old_commit + daily.3.min(5) * 3 - old_files
+            } else {
+                let before = care::earned(old_lines).saturating_add(daily.1).min(100);
+                if e.kind == "n" {
+                    daily.1 = daily
+                        .1
+                        .saturating_add(2)
+                        .saturating_add(e.files.saturating_mul(5));
+                }
+                care::earned(daily.0).saturating_add(daily.1).min(100) - before
+            };
+            let meal = reward.min(100 - daily.4);
+            daily.4 += meal;
             earned = earned.saturating_add(meal);
             food = (food + meal as f64).min(100.);
         }
@@ -240,15 +261,26 @@ impl Pet {
                     });
                 }
                 ["E", key, at, added, deleted, kind]
-                    if matches!(*kind, "c" | "m" | "cozy" | "traditional") =>
+                    if matches!(*kind, "c" | "m" | "u" | "cozy" | "traditional") =>
                 {
                     pet.events.push(Event {
                         key: decode(key)?,
                         at: number(at)?,
                         added: number(added)?,
                         deleted: number(deleted)?,
+                        files: 0,
                         kind: (*kind).into(),
                     })
+                }
+                ["E", key, at, added, deleted, kind @ ("n" | "b"), files] => {
+                    pet.events.push(Event {
+                        key: decode(key)?,
+                        at: number(at)?,
+                        added: number(added)?,
+                        deleted: number(deleted)?,
+                        files: number(files)?,
+                        kind: (*kind).into(),
+                    });
                 }
                 ["S", key] => {
                     pet.seen.insert(decode(key)?);
@@ -260,7 +292,7 @@ impl Pet {
         // Activity records also establish identity; a missing auxiliary S row cannot
         // make an already-recorded commit eligible for another meal.
         for event in &pet.events {
-            if event.kind == "c" {
+            if matches!(event.kind.as_str(), "c" | "n" | "b") {
                 pet.seen.insert(event.key.clone());
             }
         }
@@ -334,12 +366,17 @@ impl Pet {
         }
         for e in &self.events {
             data += &format!(
-                "E\t{}\t{}\t{}\t{}\t{}\n",
+                "E\t{}\t{}\t{}\t{}\t{}{}\n",
                 encode(&e.key),
                 e.at,
                 e.added,
                 e.deleted,
-                e.kind
+                e.kind,
+                if matches!(e.kind.as_str(), "n" | "b") {
+                    format!("\t{}", e.files)
+                } else {
+                    String::new()
+                }
             );
         }
         for s in &self.seen {
@@ -410,6 +447,7 @@ mod tests {
             at,
             added: lines,
             deleted: 0,
+            files: 0,
             kind: kind.into(),
         }
     }
@@ -421,6 +459,41 @@ mod tests {
         assert_eq!(p.view(72 * 3600).food, 0.);
         p.events.push(event("mode", 3600, 0, "traditional"));
         assert!((p.view(7200).food - (20. - 100. / 72. - 100. / 24.)).abs() < 0.00001);
+    }
+    #[test]
+    fn bonuses_share_cap_and_legacy_commits_stay_line_only() {
+        let mut p = pet();
+        p.events.push(event("legacy", 0, 25, "c"));
+        let mut commit = event("new", 1, 0, "n");
+        commit.files = 2;
+        p.events.push(commit);
+        assert_eq!(p.view(1).earned, 32);
+        p.events.push(event("manual", 2, 625, "m"));
+        assert_eq!(p.view(2).earned, 100);
+        let mut next = event("next", 86400, 0, "n");
+        next.files = 1;
+        p.events.push(next);
+        assert_eq!(p.view(86400).earned, 107);
+    }
+    #[test]
+    fn balanced_rewards_and_caps() {
+        let mut p = pet();
+        for (i, lines) in [5, 0, 0].into_iter().enumerate() {
+            p.events.push(event(&i.to_string(), i as u64, lines, "b"));
+        }
+        assert_eq!(p.view(2).earned, 21);
+        let mut p = pet();
+        let mut e = event("first", 0, 650, "b");
+        e.files = 3;
+        p.events.push(e);
+        p.events.push(event("second", 1, 0, "b"));
+        assert_eq!(p.view(1).earned, 79);
+        for i in 2..10 {
+            let mut e = event(&i.to_string(), i, 0, "b");
+            e.files = 1;
+            p.events.push(e);
+        }
+        assert_eq!(p.view(10).earned, 100);
     }
     #[test]
     fn replay_is_order_independent_and_daily_budget_shared() {
@@ -460,6 +533,7 @@ mod review_regressions {
             at: 100,
             added: 0,
             deleted: 0,
+            files: 0,
             kind: "traditional".into(),
         });
         p.events.push(Event {
@@ -467,6 +541,7 @@ mod review_regressions {
             at: 100,
             added: 0,
             deleted: 0,
+            files: 0,
             kind: "cozy".into(),
         });
         assert_eq!(p.view(100).mode, "cozy");
