@@ -16,28 +16,33 @@ impl Sandbox {
         fs::create_dir_all(root.join("repo")).unwrap();
         Self(root)
     }
-    fn cli(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_devagatchi"))
-            .args(args)
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_devagatchi"));
+        c.args(args)
             .current_dir(self.0.join("repo"))
             .env("XDG_DATA_HOME", self.0.join("data"))
-            .output()
-            .unwrap()
+            .env("NO_COLOR", "1");
+        c
+    }
+    fn cli(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
     }
     fn ok(&self, args: &[&str]) -> String {
-        let out = self.cli(args);
+        let o = self.cli(args);
         assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+            o.status.success(),
+            "{:?}: {}",
+            args,
+            String::from_utf8_lossy(&o.stderr)
         );
-        String::from_utf8(out.stdout).unwrap()
+        String::from_utf8(o.stdout).unwrap()
     }
-    fn git(&self, args: &[&str]) {
-        let out = Command::new("git")
+    fn git(&self, args: &[&str]) -> String {
+        let o = Command::new("git")
             .arg("-C")
             .arg(self.0.join("repo"))
             .args(args)
+            .env("XDG_DATA_HOME", self.0.join("data"))
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
             .env("GIT_COMMITTER_NAME", "Test")
@@ -45,10 +50,23 @@ impl Sandbox {
             .output()
             .unwrap();
         assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+            o.status.success(),
+            "Git: {}",
+            String::from_utf8_lossy(&o.stderr)
         );
+        String::from_utf8_lossy(&o.stdout).into()
+    }
+    fn setup(&self) {
+        self.git(&["init", "-q"]);
+        self.git(&["config", "commit.gpgsign", "false"]);
+    }
+    fn commit(&self, name: &str, contents: &str) {
+        fs::write(self.0.join("repo").join(name), contents).unwrap();
+        self.git(&["add", name]);
+        self.git(&["commit", "-qm", "work"]);
+    }
+    fn global(&self) -> PathBuf {
+        self.0.join("data/devagatchi/pet.txt")
     }
 }
 impl Drop for Sandbox {
@@ -57,162 +75,139 @@ impl Drop for Sandbox {
     }
 }
 #[test]
-fn help_works_before_setup_and_rejects_unknown_commands() {
+fn scopes_keep_pets_independent_and_ignore_local_data() {
     let s = Sandbox::new();
-    assert!(s.ok(&[]).contains("COMMANDS"));
-    for command in [
-        "init", "status", "sync", "feed", "pet", "mode", "color", "help",
-    ] {
-        assert!(s.ok(&[command, "--help"]).contains("USAGE"));
-        assert!(s.ok(&["help", command]).contains("USAGE"));
-    }
-    assert!(s.ok(&["--version"]).contains("devagatchi"));
-    assert!(!s.cli(&["help", "unknown"]).status.success());
-    assert!(!s.cli(&["status", "extra"]).status.success());
+    s.setup();
+    s.ok(&["init", "Mochi"]);
+    s.ok(&["init", "Scout", "--repo"]);
+    assert!(s.ok(&["status"]).contains("Mochi"));
+    assert!(s.ok(&["status"]).contains("Scout"));
+    assert!(!s.cli(&["feed", "25"]).status.success());
+    s.ok(&["feed", "25", "--both"]);
+    assert!(s.ok(&["status", "--global"]).contains("Food earned: 20"));
+    assert!(s.ok(&["status", "--repo"]).contains("Food earned: 20"));
+    assert!(s
+        .git(&["check-ignore", ".devagatchi.local"])
+        .contains(".devagatchi.local"));
+    let before = fs::read(s.global()).unwrap();
+    assert!(!s.cli(&["init", "Replace"]).status.success());
+    assert_eq!(before, fs::read(s.global()).unwrap());
+    assert!(!s.cli(&["init", "X", "--repo", "--global"]).status.success());
 }
 #[test]
-fn sync_feeds_once_and_existing_pets_survive_changes() {
+fn line_stats_fan_out_and_sync_is_idempotent() {
     let s = Sandbox::new();
-    s.git(&["init", "-q"]);
+    s.setup();
     s.ok(&["init", "Mochi"]);
-    s.ok(&["feed", "42"]);
-    let path = s.0.join("data/devagatchi/pet.txt");
-    let mut old: Vec<String> = fs::read_to_string(&path)
-        .unwrap()
-        .lines()
-        .map(str::to_string)
-        .collect();
-    old[7] = "1".into();
-    fs::write(&path, old.join("\n") + "\n").unwrap();
-    s.git(&[
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "--allow-empty",
-        "-qm",
-        "test",
-    ]);
+    s.ok(&["init", "Scout", "--repo"]);
+    s.commit("file.txt", &"hello\n".repeat(25));
     let out = s.ok(&["sync"]);
-    assert!(out.contains("1 new commit(s)"));
-    assert!(out.contains("ate 1 commit meal(s)"));
-    assert!(out.contains("Commit meals (lifetime): 1"));
-    assert!(out.contains("Lines fed (lifetime): 42"));
-    let after = fs::read_to_string(&path).unwrap();
-    assert_ne!(after.lines().nth(7), Some("1"));
-    assert!(s.ok(&["sync"]).contains("No new commits"));
-    assert_eq!(after, fs::read_to_string(&path).unwrap());
-    // Moving backwards must not grant a meal or change progress.
-    s.git(&[
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "--allow-empty",
-        "-qm",
-        "second",
-    ]);
-    assert!(s.ok(&["sync"]).contains("Commit meals (lifetime): 2"));
-    let latest = fs::read(&path).unwrap();
-    s.git(&["checkout", "--detach", "HEAD~1"]);
-    assert!(!s.cli(&["sync"]).status.success());
-    assert_eq!(latest, fs::read(&path).unwrap());
-    // Original eight-line saves had no species field.
+    assert_eq!(out.matches("+25 / -0 lines, +20 food").count(), 2);
+    let state = fs::read(s.global()).unwrap();
+    assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
+    assert_eq!(state, fs::read(s.global()).unwrap());
+    s.commit("file.txt", &"hello\n".repeat(100));
+    let out = s.ok(&["sync"]);
+    assert_eq!(out.matches("+75 / -0 lines, +20 food").count(), 2);
+    s.commit("Cargo.lock", &"generated\n".repeat(100));
+    assert!(s.ok(&["sync"]).contains("+0 / -0 lines, +0 food"));
+    s.git(&["mv", "file.txt", "renamed.txt"]);
+    s.git(&["commit", "-qm", "rename"]);
+    assert!(s.ok(&["sync"]).contains("+0 / -0 lines, +0 food"));
+    s.commit("renamed.txt", &"hello\n".repeat(90));
+    assert!(s.ok(&["sync"]).contains("+0 / -10 lines"));
+}
+#[test]
+fn legacy_migration_preserves_identity_and_totals() {
+    let s = Sandbox::new();
+    s.setup();
+    s.commit("first", "a\n");
+    let head = s.git(&["rev-parse", "HEAD"]);
+    let root = s.0.join("repo").to_string_lossy().to_string();
+    let hex: String = root.bytes().map(|b| format!("{b:02x}")).collect();
+    fs::create_dir_all(s.global().parent().unwrap()).unwrap();
     fs::write(
-        &path,
-        after.lines().take(8).collect::<Vec<_>>().join("\n") + "\n",
+        s.global(),
+        format!(
+            "devagatchi-v1\n4d6f636869\ncozy\n{hex}\n{}\n8\n42\n1\ndog\n3\ngreen\n",
+            head.trim()
+        ),
     )
     .unwrap();
-    assert!(s.ok(&[]).contains("Mochi the cat"));
-    for species in ["cat", "dog", "bird", "lizard"] {
-        let out = s.ok(&["pet", species]);
-        assert!(out.contains(&format!("Mochi the {species}")));
-        assert!(out.contains("Lines fed (lifetime): 42"));
-    }
-    for color in [
-        "cyan", "green", "yellow", "blue", "magenta", "red", "white", "off",
-    ] {
-        let out = s.ok(&["color", color]);
-        assert!(!out.contains('\x1b')); // Captured output must stay plain.
-        assert_eq!(
-            fs::read_to_string(&path).unwrap().lines().nth(10),
-            Some(color)
-        );
-    }
-    let before = fs::read(&path).unwrap();
+    let out = s.ok(&["status"]);
+    assert!(out.contains("Mochi the dog"));
+    assert!(out.contains("Commits spotted: 8"));
+    assert!(out.contains("Lines fed (lifetime): 42"));
+    s.ok(&["color", "cyan"]);
+    assert!(fs::read_to_string(s.global())
+        .unwrap()
+        .starts_with("devagatchi-v2"));
+    assert!(s.ok(&["sync"]).contains("0 new commit(s)"));
+}
+#[test]
+fn manual_and_git_lines_share_budget_and_invalid_inputs_do_not_write() {
+    let s = Sandbox::new();
+    s.setup();
+    s.ok(&["init", "M"]);
+    s.ok(&["feed", "25"]);
+    s.commit("x", &"x\n".repeat(75));
+    assert!(s.ok(&["sync"]).contains("+20 food"));
+    let before = fs::read(s.global()).unwrap();
     for args in [
         vec!["feed", "0"],
         vec!["feed", "-1"],
-        vec!["pet", "snake"],
         vec!["color", "invalid"],
-        vec!["init", "Other"],
+        vec!["mode", "invalid"],
+        vec!["exclude", "../outside"],
     ] {
         assert!(!s.cli(&args).status.success());
     }
-    assert_eq!(before, fs::read(&path).unwrap());
-    let out = s.ok(&["feed", "8"]);
-    assert!(out.contains("ate 8 lines"));
-    assert!(out.contains("Lines fed (lifetime): 50"));
+    assert_eq!(before, fs::read(s.global()).unwrap());
 }
-
 #[test]
-fn status_explains_care_and_mode_changes_preserve_timer() {
+fn global_multiple_repositories_and_custom_excludes() {
     let s = Sandbox::new();
-    s.git(&["init", "-q"]);
-    let out = s.ok(&["init", "Mochi"]);
-    assert!(out.contains("Mood: happy | Care mode: cozy"));
-    assert!(out.contains("Next: content in"));
-    let path = s.0.join("data/devagatchi/pet.txt");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    s.setup();
+    s.ok(&["init", "M"]);
+    s.ok(&["exclude", "generated"]);
+    fs::create_dir_all(s.0.join("repo/generated")).unwrap();
+    s.commit("generated/output", "x\n");
+    assert!(s.ok(&["sync"]).contains("+0 food"));
+    let other = s.0.join("other");
+    fs::create_dir(&other).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .arg(&other)
+        .status()
         .unwrap()
-        .as_secs();
-    for (age, cozy, traditional, eye) in [
-        (2, "content", "content", "o"),
-        (25, "content", "hungry", "O"),
-        (49, "content", "very hungry", ";"),
-        (73, "sleepy", "very hungry", ";"),
+        .success());
+    let out = s
+        .command(&["connect"])
+        .current_dir(&other)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(s
+        .ok(&["status", "--global"])
+        .contains("Connected repositories: 2"));
+}
+#[test]
+fn help_before_setup_and_all_settings() {
+    let s = Sandbox::new();
+    assert!(s.ok(&[]).contains("USAGE"));
+    for c in [
+        "init", "status", "feed", "mode", "pet", "color", "connect", "exclude", "help",
     ] {
-        let mut state: Vec<String> = fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .map(str::to_string)
-            .collect();
-        state[2] = "cozy".into();
-        state[7] = (now - age * 3600).to_string();
-        let timestamp = state[7].clone();
-        fs::write(&path, state.join("\n") + "\n").unwrap();
-        let before = fs::read(&path).unwrap();
-        assert!(s
-            .ok(&["status"])
-            .contains(&format!("Mood: {cozy} | Care mode: cozy")));
-        assert_eq!(before, fs::read(&path).unwrap());
-        let out = s.ok(&["mode", "traditional"]);
-        assert!(out.contains(&format!("Mood: {traditional} | Care mode: traditional")));
-        assert!(out.contains(&format!("({eye})")));
-        assert_eq!(
-            fs::read_to_string(&path).unwrap().lines().nth(7),
-            Some(timestamp.as_str())
-        );
-        assert!(out.contains("Care age:"));
-        assert!(out.contains("Next:"));
+        assert!(s.ok(&[c, "--help"]).contains("USAGE"));
     }
-    let out = s.ok(&["feed", "1"]);
-    assert!(out.contains("Mood: happy"));
-    assert!(out.contains("(^)"));
-    assert!(out.contains("Next: content in"));
-    for args in [
-        vec!["--help"],
-        vec!["status", "--help"],
-        vec!["init", "--help"],
-        vec!["mode", "--help"],
+    s.setup();
+    s.ok(&["init", "M"]);
+    for c in [
+        "cyan", "green", "yellow", "blue", "magenta", "red", "white", "off",
     ] {
-        let out = s.ok(&args);
-        assert!(out.contains("happy for the first hour"));
-        assert!(out.contains("72 hours"));
-        assert!(out.contains("24 hours"));
-        assert!(out.contains("48 hours"));
+        assert!(!s.ok(&["color", c]).contains('\x1b'));
+    }
+    for pet in ["cat", "dog", "bird", "lizard"] {
+        assert!(s.ok(&["pet", pet]).contains(&format!("M the {pet}")));
     }
 }

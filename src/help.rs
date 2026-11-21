@@ -1,58 +1,17 @@
 pub fn show(command: Option<&str>) -> Result<(), String> {
-    let text = match command {
-        None => r"DEVAGATCHI - your offline terminal companion
-
-USAGE
-  devagatchi <command> [arguments]
-  devagatchi                      Show your pet (or help before setup)
-
-COMMANDS
-  init <name> [repo] [mode]       Adopt a cat; defaults: current folder, cozy
-  status                         Show mood, care age, next change, and totals
-  sync                           Feed one meal per new commit and show status
-  feed <lines>                   Feed a manually entered positive line count
-  pet <species>                  Choose cat, dog, bird, or lizard
-  color <color>                  Choose cyan, green, yellow, blue, magenta,
-                                 red, white, or off (default: cyan)
-  mode <mode>                    Choose cozy or traditional care
-  help [command]                 Show help for all commands or one command
-
-OPTIONS
-  -h, --help                     Show help (also after any command)
-  -V, --version                  Show installed version
-
-EXAMPLES
-  devagatchi init Mochi . cozy
-  devagatchi color magenta
-  devagatchi pet lizard
-  devagatchi sync
-  devagatchi feed 42
-  devagatchi feed --help
-
-PRIVACY & FEEDING
-  Git metadata counts commits only. No source contents or diffs are requested.
-  Sync feeds one commit meal per newly detected commit and refreshes care.
-  Commit meals are separate from manually entered lines. For an extra meal:
-  `devagatchi feed 42` feeds 42 lines. Replace placeholders; do not type < or >.
-  Run sync after committing: there is no background watcher or network connection.
-  Color is disabled for redirected output, TERM=dumb, or a nonempty NO_COLOR.
-
-STORAGE
-  One pet per data directory. Existing pets survive reinstalls and updates.
-  $XDG_DATA_HOME/devagatchi/pet.txt, or ~/.local/share/devagatchi/pet.txt.",
-        Some("init") => "USAGE: devagatchi init <name> [repo] [cozy|traditional]\n\nAdopt a cat. Repository defaults to the current folder; care defaults to cozy.\nExisting commits are the baseline. An existing pet will never be overwritten.\nQuote names and paths that contain spaces.\n\nExample: devagatchi init Mochi . cozy",
-        Some("status") => "USAGE: devagatchi status\n\nShow the matching face, mood, care age, time until the next change, and totals.\nDoes not scan Git or feed your pet. Running devagatchi alone also shows status.",
-        Some("sync") => "USAGE: devagatchi sync\n\nFeed one commit meal per new commit since the last sync and refresh care.\nCommit meals do not change your manually entered line total.\nRepeat syncs with no new commits do not feed or refresh care.\nUnrelated or rewritten history is rejected without changing progress.\nPreviously tracked commits are not retroactively fed. Run this command after\ncommitting; there is no background watcher or Git hook.",
-        Some("color") => "USAGE: devagatchi color <cyan|green|yellow|blue|magenta|red|white|off>\n\nSave a color for the portrait and mood (default: cyan).\nColors appear only in an interactive terminal. Redirected output, TERM=dumb,\nand a nonempty NO_COLOR disable color. Example: devagatchi color green",
-        Some("feed") => "USAGE: devagatchi feed <lines>\n\nReplace <lines> with a positive whole number, without angle brackets.\nThe number is entered manually: source contents are never inspected.\nShows this meal's size and updated lifetime totals, and refreshes care.\n\nExample: devagatchi feed 42",
-        Some("pet") => "USAGE: devagatchi pet <cat|dog|bird|lizard>\n\nChange your pet's appearance and show status. Name and progress are preserved.\n\nExample: devagatchi pet bird",
-        Some("mode") => "USAGE: devagatchi mode <cozy|traditional>\n\nSwitch care schedules. The new mood takes effect immediately, based on the\nexisting care timer. Changing modes does not count as a meal.\n\nExample: devagatchi mode cozy",
-        Some("help") => "USAGE: devagatchi help [command]\n\nExamples: devagatchi --help, devagatchi help feed, devagatchi feed --help",
-        Some(other) => return Err(format!("Unknown command '{other}'. Run `devagatchi --help`.")),
+    let text=match command{
+        None=>"DEVAGATCHI — offline developer pets\n\nUSAGE: devagatchi COMMAND [--global|--repo|--both]\n\nCOMMANDS\n  init NAME [PATH] [MODE]  Adopt a pet; default scope: global, mode: cozy\n  connect                  Connect current repo to global pet; baseline old history\n  status                   Show both applicable pets; no arguments does the same\n  feed LINES               Manually feed positive lines (shares daily food budget)\n  mode cozy|traditional    Change decay rate, preserving elapsed care\n  pet cat|dog|bird|lizard   Change appearance\n  color COLOR              cyan, green, yellow, blue, magenta, red, white, off\n  exclude PATH             Exclude a file/directory prefix from future meals\n  help [COMMAND]           Command-specific help\n\nOPTIONS\n  --global  User-wide pet; --repo  Current checkout pet; --both  Both pets\n  -h, --help  Help; -V, --version  Version\n\nIf both pets exist, choose a scope when feeding or changing settings.\nGlobal state: $XDG_DATA_HOME/devagatchi/pet.txt or ~/.local/share/devagatchi/pet.txt\nRepository state: .devagatchi.local (automatically locally Git-ignored)",
+        Some("init")=>"USAGE: devagatchi init NAME [PATH] [cozy|traditional] [--global|--repo]\nDefault: global, current directory, cozy. Existing pets are never overwritten.\nRun twice with different scopes to adopt two pets. Existing commits are the baseline.",
+        Some("connect")=>"USAGE: devagatchi connect\nConnect the current checkout to your global pet. Existing history earns no food.",
+        Some("status")=>"USAGE: devagatchi status [--global|--repo|--both]\nShows food and mood. Default: both applicable pets. Does not feed or scan history.",
+        Some("feed")=>"USAGE: devagatchi feed LINES [--global|--repo|--both]\nExample: devagatchi feed 25 --both. Manual lines use the same daily formula as commits.",
+        Some("mode")=>"USAGE: devagatchi mode cozy|traditional [--global|--repo|--both]\nOld decay applies up to the change. Switching mode does not refill food.",
+        Some("pet")=>"USAGE: devagatchi pet cat|dog|bird|lizard [--global|--repo|--both]",
+        Some("color")=>"USAGE: devagatchi color cyan|green|yellow|blue|magenta|red|white|off [SCOPE]\nNonempty NO_COLOR, TERM=dumb, and redirected output disable ANSI colors.",
+        Some("exclude")=>"USAGE: devagatchi exclude PATH [SCOPE]\nExclude a repository-relative file or directory prefix. No globs. Applies only to future work.",
+        Some("help")=>"USAGE: devagatchi help [COMMAND]",
+        Some(_)=>return Err("Unknown help command".into()),
     };
-    println!("{text}");
-    if command.is_none() || matches!(command, Some("init" | "status" | "mode" | "feed" | "sync")) {
-        println!("\n{}", crate::care::GUIDE);
-    }
+    println!("{text}\n\n{}", crate::care::GUIDE);
     Ok(())
 }

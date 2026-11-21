@@ -6,7 +6,6 @@ pub enum Mood {
     Hungry,
     VeryHungry,
 }
-
 impl Mood {
     pub fn label(self) -> &'static str {
         match self {
@@ -18,88 +17,74 @@ impl Mood {
         }
     }
 }
-
-pub const GUIDE: &str = "CARE SCHEDULE (time since adoption or the most recent meal)
-  Both modes: happy for the first hour, then content.
-  Cozy: content until 72 hours (3 days), then sleepy. Never hungry.
-  Traditional: content until 24 hours (1 day), hungry until 48 hours (2 days),
-               then very hungry. No death or permanent harm.
-  A manual feed or sync with new commits resets the timer to happy.
-  Bigger meals do not extend the timer. A sync with no new commits does not reset it.
-  Changing modes applies the new schedule immediately without resetting the timer.
-  Time passes while the app is closed. Faces and status update when you run a command;
-  there is no background watcher. Status alone does not feed your pet.";
-
-pub fn schedule(mode: &str, elapsed: u64) -> (Mood, Option<(Mood, u64)>) {
-    if elapsed < 3600 {
-        (Mood::Happy, Some((Mood::Content, 3600 - elapsed)))
-    } else if mode == "cozy" {
-        if elapsed < 72 * 3600 {
-            (Mood::Content, Some((Mood::Sleepy, 72 * 3600 - elapsed)))
-        } else {
-            (Mood::Sleepy, None)
-        }
-    } else if elapsed < 24 * 3600 {
-        (Mood::Content, Some((Mood::Hungry, 24 * 3600 - elapsed)))
-    } else if elapsed < 48 * 3600 {
-        (Mood::Hungry, Some((Mood::VeryHungry, 48 * 3600 - elapsed)))
+pub const GUIDE: &str = "FOOD & CARE
+  Food ranges from 0 to 100. A full bar lasts 72h in cozy or 24h in traditional.
+  80-100: happy. 40-79: content. Below 40: sleepy (cozy) or hungry (traditional).
+  At zero: cozy rests; traditional is very hungry. No death or lost progress.
+  Daily food = min(100, floor(4 * sqrt(eligible added + deleted lines))).
+  Each event earns only the increase in that day's total; days use UTC.
+  Food above 100 is discarded. Manual lines share the same daily allowance.
+  Time passes while closed. Mode changes apply the old rate up to the change.
+  Hooks feed after commits; sync catches missed work. Status never feeds.";
+pub fn earned(lines: u64) -> u64 {
+    // Integer arithmetic: at 625 lines the daily reward is already saturated.
+    let scaled = lines.min(625) * 16;
+    (0..=100).rev().find(|n| n * n <= scaled).unwrap_or(0)
+}
+pub fn drain(food: f64, mode: &str, seconds: u64) -> f64 {
+    (food - seconds as f64 * 100.0 / period(mode) as f64).max(0.0)
+}
+pub fn period(mode: &str) -> u64 {
+    if mode == "cozy" {
+        72 * 3600
     } else {
-        (Mood::VeryHungry, None)
+        24 * 3600
     }
 }
-
+pub fn mood(food: f64, mode: &str) -> Mood {
+    if food >= 80.0 {
+        Mood::Happy
+    } else if food >= 40.0 {
+        Mood::Content
+    } else if mode == "cozy" {
+        Mood::Sleepy
+    } else if food > 0.0 {
+        Mood::Hungry
+    } else {
+        Mood::VeryHungry
+    }
+}
 pub fn duration(seconds: u64) -> String {
     if seconds < 60 {
-        return "less than a minute".into();
-    }
-    let minutes = seconds / 60;
-    if minutes < 60 {
-        format!("{minutes}m")
-    } else if minutes < 24 * 60 {
-        format!("{}h {}m", minutes / 60, minutes % 60)
+        "less than a minute".into()
+    } else if seconds < 86400 {
+        format!("{}h {}m", seconds / 3600, seconds / 60 % 60)
     } else {
-        format!(
-            "{}d {}h {}m",
-            minutes / (24 * 60),
-            (minutes / 60) % 24,
-            minutes % 60
-        )
+        format!("{}d {}h", seconds / 86400, seconds / 3600 % 24)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn exact_transition_boundaries() {
-        for mode in ["cozy", "traditional"] {
-            assert_eq!(
-                schedule(mode, 0),
-                (Mood::Happy, Some((Mood::Content, 3600)))
-            );
-            assert_eq!(
-                schedule(mode, 3599),
-                (Mood::Happy, Some((Mood::Content, 1)))
-            );
-            assert_eq!(schedule(mode, 3600).0, Mood::Content);
-        }
-        for (mode, boundary, before, after) in [
-            ("cozy", 72 * 3600, Mood::Content, Mood::Sleepy),
-            ("traditional", 24 * 3600, Mood::Content, Mood::Hungry),
-            ("traditional", 48 * 3600, Mood::Hungry, Mood::VeryHungry),
+    fn rewards_and_decay() {
+        for (lines, food) in [
+            (0, 0),
+            (1, 4),
+            (10, 12),
+            (25, 20),
+            (100, 40),
+            (400, 80),
+            (625, 100),
+            (u64::MAX, 100),
         ] {
-            assert_eq!(schedule(mode, boundary - 1), (before, Some((after, 1))));
-            assert_eq!(schedule(mode, boundary).0, after);
-            assert_eq!(schedule(mode, boundary + 1).0, after);
+            assert_eq!(earned(lines), food);
         }
-        assert_eq!(schedule("cozy", u64::MAX), (Mood::Sleepy, None));
-        assert_eq!(schedule("traditional", u64::MAX), (Mood::VeryHungry, None));
-    }
-    #[test]
-    fn readable_durations() {
-        assert_eq!(duration(59), "less than a minute");
-        assert_eq!(duration(60), "1m");
-        assert_eq!(duration(3600), "1h 0m");
-        assert_eq!(duration(72 * 3600), "3d 0h 0m");
+        assert_eq!(earned(25) + earned(100) - earned(25), earned(100));
+        assert_eq!(drain(100., "cozy", 72 * 3600), 0.);
+        assert_eq!(drain(100., "traditional", 12 * 3600), 50.);
+        assert_eq!(mood(40., "cozy"), Mood::Content);
+        assert_eq!(mood(39., "cozy"), Mood::Sleepy);
+        assert_eq!(mood(0., "traditional"), Mood::VeryHungry);
     }
 }
