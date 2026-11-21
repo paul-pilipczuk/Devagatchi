@@ -55,34 +55,37 @@ Repository state, its backup, temporary file, and lock are added to Git's local 
 
 ## Food rules
 
-Food ranges from **0 to 100**. Additions and deletions have equal value. Each pet's daily food allowance is calculated from cumulative eligible changed lines:
+Food ranges from **0 to 100**. Additions and deletions have equal value. Each pet's daily food allowance is calculated from cumulative eligible activity:
 
 ```text
 L = added + deleted lines, including manual feeds, for one UTC day
-Daily food earned = min(100, floor(4 × sqrt(L)))
+C = newly tracked commits; F = eligible new text files, for that UTC day
+Line reward = min(60, floor(3 × sqrt(L)))
+Commit reward = min(25, 5 × C)
+File reward = min(15, 3 × F)
+Daily food earned = min(100, line reward + commit reward + file reward)
 New reward = updated daily allowance − already earned daily allowance
 ```
 
-| Daily eligible lines | Total food earned |
-| ---: | ---: |
-| 1 | 4 |
-| 10 | 12 |
-| 25 | 20 |
-| 100 | 40 |
-| 400 | 80 |
-| 625+ | 100 |
+| Daily activity | Food earned |
+| --- | ---: |
+| 5 lines, 3 commits, no new files | 21 |
+| 25 lines, 1 commit, 1 new file | 23 |
+| 100 lines, 2 commits, no new files | 40 |
+| 650 lines, 2 commits, 3 new files | 79 |
+| 650 lines, 5 commits, 5 new files | 100 |
 
-Splitting the same number of lines across multiple commits on the same day does not increase the reward. Food above 100 is discarded, not banked. Food earned still consumes the daily allowance when the pet is full. This is a game, not a code-quality or productivity metric.
+Splitting lines across commits does not increase the line reward. Each newly tracked commit adds up to 5 food and each eligible added text file adds up to 3, including an empty text file, subject to their component caps. All rewards share the daily cap. Food above 100 is discarded, not banked. Food earned still consumes the daily allowance when the pet is full. This is a game, not a code-quality or productivity metric.
 
 - Text code, tests, and documentation count.
-- Binary files, whitespace-only edits, pure detected renames, and empty commits earn no food.
-- Merge commits do not earn another meal for their changes; previously unseen ordinary ancestor commits can count. Merge-resolution-only changes are not rewarded in this version.
+- Binary files, whitespace-only edits, and pure detected renames add no line or new-file reward. Empty commits still earn the commit bonus.
+- Merge commits earn the commit bonus but no line or new-file reward; previously unseen ordinary ancestor commits can count. Merge-resolution-only changes do not earn line or file rewards.
 - Known generated/dependency directories (`node_modules`, `vendor`, `target`, `dist`, `build`), common lockfiles, source maps, and minified JS/CSS are excluded. These heuristics cannot identify every generated file.
 - Use `devagatchi exclude generated --global` to exclude another repository-relative file or directory prefix from future meals. Exclusions are per pet and apply to its connected repositories; they are literal prefixes, not globs. They do not undo past rewards.
 - Human and agent commits are treated equally. Activity is repository-wide, not filtered by author. Imported work after connection can count too.
 - Manual `feed 25` adds 25 eligible lines to today's allowance; it does **not** directly add 25 food or refill the bar.
 
-The ledger records commit IDs, counts, timestamps, and small settings. Paths are used transiently to filter statistics; source contents and patches are not stored. Commit time determines the reward day and decay, clamped between repository enrollment and the current time. Consequently catching up old activity does not give a fresh full meal today. Commit timestamps are not a tamper-proof measure of work.
+Previously recorded events retain their original rules. On a transition day, previous lines and food count toward the new line and daily caps; new commit and file bonuses use the new rules. The ledger records commit IDs, counts, timestamps, and small settings. Paths are used transiently to filter statistics; source contents and patches are not stored. Commit time determines the reward day and decay, clamped between repository enrollment and the current time. Consequently catching up old activity does not give a fresh full meal today. Commit timestamps are not a tamper-proof measure of work.
 
 ## Food bar and care
 

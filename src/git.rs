@@ -182,7 +182,7 @@ pub fn excluded(path: &str, custom: &[String]) -> bool {
             .iter()
             .any(|p| path == p || path.starts_with(&format!("{}/", p.trim_end_matches('/'))))
 }
-pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64, u64), String> {
+pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64, u64, u64), String> {
     if !oid_or_empty(id) || id.is_empty() {
         return Err("Invalid commit ID".into());
     }
@@ -194,9 +194,9 @@ pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64, u64),
         .ok_or("Missing timestamp")?
         .parse::<u64>()
         .map_err(|_| "Invalid commit timestamp")?;
-    // Merges have no additional meal; ordinary ancestor commits are handled separately.
+    // Merge changes do not add lines or files; ancestor commits are handled separately.
     if fields.len() > 2 {
-        return Ok((0, 0, timestamp));
+        return Ok((0, 0, 0, timestamp));
     }
     let raw = bytes(
         root,
@@ -216,7 +216,26 @@ pub fn stats(root: &str, id: &str, custom: &[String]) -> Result<(u64, u64, u64),
         ],
     )?;
     let (added, deleted) = parse_stats(&raw, custom)?;
-    Ok((added, deleted, timestamp))
+    let new_raw = bytes(
+        root,
+        &[
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "-M",
+            "-l1000",
+            "--ignore-all-space",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "--diff-filter=A",
+            "-z",
+            id,
+        ],
+    )?;
+    let files = count_new_files(&new_raw, custom)?;
+    Ok((added, deleted, files, timestamp))
 }
 fn parse_stats(raw: &[u8], custom: &[String]) -> Result<(u64, u64), String> {
     let mut fields = raw.split(|b| *b == 0);
@@ -255,6 +274,22 @@ fn parse_stats(raw: &[u8], custom: &[String]) -> Result<(u64, u64), String> {
     }
     Ok((a, d))
 }
+fn count_new_files(raw: &[u8], custom: &[String]) -> Result<u64, String> {
+    let mut count = 0u64;
+    for row in raw.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let mut parts = row.splitn(3, |b| *b == b'\t');
+        let add = parts.next().ok_or("Missing additions")?;
+        let del = parts.next().ok_or("Missing deletions")?;
+        let path = parts.next().ok_or("Missing path")?;
+        if path.is_empty() {
+            return Err("Invalid added file path".into());
+        }
+        if add != b"-" && del != b"-" && !excluded(&String::from_utf8_lossy(path), custom) {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +301,9 @@ mod tests {
         );
         assert_eq!(parse_stats(b"1\t0\t\0old\0new\0", &[]).unwrap(), (1, 0));
         assert_eq!(parse_stats(b"100\t0\tCargo.lock\0", &[]).unwrap(), (0, 0));
+        assert_eq!(
+            count_new_files(b"0\t0\tempty\0-\t-\tbinary\x0010\t0\tCargo.lock\0", &[]).unwrap(),
+            1
+        );
     }
 }

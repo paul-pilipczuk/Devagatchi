@@ -7,13 +7,14 @@ use std::collections::HashMap;
 pub const BATCH: usize = 200;
 #[derive(Default)]
 pub struct Cache {
-    stats: HashMap<String, (u64, u64, u64)>,
+    stats: HashMap<String, (u64, u64, u64, u64)>,
 }
 #[derive(Default)]
 pub struct Report {
     pub commits: u64,
     pub added: u64,
     pub deleted: u64,
+    pub files: u64,
     pub pending: bool,
     pub errors: Vec<String>,
 }
@@ -51,6 +52,7 @@ fn sync_repositories(
                     report.commits += 1;
                     report.added = report.added.saturating_add(event.added);
                     report.deleted = report.deleted.saturating_add(event.deleted);
+                    report.files = report.files.saturating_add(event.files);
                     pet.seen.insert(event.key.clone());
                     pet.events.push(event);
                 }
@@ -104,7 +106,7 @@ fn prepare(pet: &Pet, index: usize, cache: &mut Cache, catch_up: bool) -> Result
     for id in ids.iter().take(BATCH) {
         let key = format!("{}:{id}", repo.common);
         let cache_key = format!("{}:{:?}", key, pet.excludes);
-        let (added, deleted, timestamp) = match cache.stats.get(&cache_key) {
+        let (added, deleted, files, timestamp) = match cache.stats.get(&cache_key) {
             Some(stats) => *stats,
             None => {
                 let stats = git::stats(&repo.root, id, &pet.excludes)?;
@@ -117,7 +119,8 @@ fn prepare(pet: &Pet, index: usize, cache: &mut Cache, catch_up: bool) -> Result
             at: timestamp.max(repo.since).min(now()),
             added,
             deleted,
-            kind: "c".into(),
+            files,
+            kind: "b".into(),
         });
     }
     let pending = ids.len() > BATCH;
